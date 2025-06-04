@@ -1,0 +1,73 @@
+name: Build and Push to Artifact Registry
+
+on:
+  push:
+    branches:
+      - cloud-dev
+  pull_request:
+      branches:
+      - cloud-dev
+
+env:
+  PROJECT_ID: opt-test-438021
+  REGION: us-central1          
+  GAR_LOCATION: us-central1-docker.pkg.dev/opt-test-438021/cloud-run-source-deploy/resource-cleaner-be:latest
+  JOB_NAME: resource-cleaner-be
+
+jobs:
+  build-push-artifact:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Checkout code"
+        uses: "actions/checkout@v3"
+
+      # Autenticación con GCP usando GCP_SA_KEY 
+      - id: "auth"
+        uses: "google-github-actions/auth@v1"
+        with:
+          credentials_json: "${{ secrets.GCP_SA_KEY_DEV }}"
+        # Cuenta de servicio 
+      - name: "Create GCP_CREDS.json"
+        run: echo '${{ secrets.GCP_SA_KEY_DEV }}' > GCP_CREDS.json
+        
+      - name: "Set up Cloud SDK"
+        uses: "google-github-actions/setup-gcloud@v1"
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          export_default_credentials: true
+
+      # Instalar comandos beta de gcloud
+      - name: "Install Beta Commands"
+        run: |
+          gcloud components install beta --quiet
+
+      - name: "Configure Docker to use gcloud as a credential helper"
+        run: |
+          gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ env.GAR_LOCATION }} .
+
+      - name: Push Docker image
+        run: |
+          docker push ${{ env.GAR_LOCATION }}
+
+      - name: "Deploy to Cloud Run Job"
+        run: |
+          gcloud beta run jobs describe ${{ env.JOB_NAME }} --region=${{ env.REGION }} --format="value(name)" --quiet || \
+          gcloud beta run jobs create ${{ env.JOB_NAME }} \
+            --image ${{ env.GAR_LOCATION }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }} \
+            --task-timeout 300 --quiet
+
+          # Actualiza el Job si ya existe
+          gcloud beta run jobs update ${{ env.JOB_NAME }} \
+            --image ${{ env.GAR_LOCATION }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }} --quiet
+      # Eliminar archivos de credenciales después del uso
+      - name: "Clean up credentials"
+        run: |
+          rm -f GCP_CREDS.json 
